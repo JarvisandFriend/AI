@@ -1,0 +1,17 @@
+name: Fetch Model
+on: workflow_dispatch
+
+jobs:
+  download:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download model
+        run: |
+          curl -L -o gemma-4-E2B-it-Q4_K_M.gguf \
+            "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf"
+
+      - name: Upload model
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemma-model
+          path: gemma-4-E2B-it-Q4_K_M.gguf
