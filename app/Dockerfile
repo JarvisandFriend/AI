@@ -3,6 +3,7 @@ FROM python:3.9-slim
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
+    zstd \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Ollama
@@ -29,7 +30,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 
 # Start Ollama in background, pull model, then start FastAPI
 # Note: Using llama3.2:1b for faster loading on free tier
-CMD ollama serve & \
-    sleep 10 && \
-    ollama pull llama3.2:1b && \
-    uvicorn app:app --host 0.0.0.0 --port 7860
+COPY start.sh .
+RUN chmod +x start.sh
+CMD ["./start.sh"]
