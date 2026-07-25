@@ -15,7 +15,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -B build -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm -DLLAMA_CURL=OFF
+          cmake -B build -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod -DLLAMA_CURL=OFF
           cmake --build build --config Release -j $(nproc)
 
       - name: Upload binaries
