@@ -1,10 +1,7 @@
 #!/bin/bash
 set -e
 
-if ! proot-distro list 2>/dev/null | grep -q "ubuntu.*installed"; then
-  echo "Installing Ubuntu (one-time)..."
-  proot-distro install ubuntu
-fi
+proot-distro install ubuntu 2>/dev/null || true
 
 MODEL="/data/data/com.termux/files/home/AI/models/gemma-4-E2B-it-Q4_K_M.gguf"
 BIN="/data/data/com.termux/files/home/AI/llama-bin"
