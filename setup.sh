@@ -16,18 +16,22 @@ echo "== Installing hf CLI deps =="
 pip install huggingface_hub --no-deps
 pip install requests tqdm filelock pyyaml packaging typing-extensions fsspec click httpx
 
-echo "== HuggingFace login =="
-hf auth login
-
 mkdir -p ~/AI/models
 cd ~/AI
 
-echo "== Downloading model =="
-TOKEN=$(cat ~/.cache/huggingface/token)
-aria2c -x 8 -s 8 -k 1M \
-  --header "Authorization: Bearer $TOKEN" \
-  -d ./models -o "$MODEL_FILE" \
-  "https://huggingface.co/${MODEL_REPO}/resolve/main/${MODEL_FILE}"
+if [ -f "models/$MODEL_FILE" ]; then
+  echo "== Model already downloaded, skipping =="
+else
+  echo "== HuggingFace login =="
+  hf auth login
+
+  echo "== Downloading model =="
+  TOKEN=$(cat ~/.cache/huggingface/token)
+  aria2c -x 8 -s 8 -k 1M \
+    --header "Authorization: Bearer $TOKEN" \
+    -d ./models -o "$MODEL_FILE" \
+    "https://huggingface.co/${MODEL_REPO}/resolve/main/${MODEL_FILE}"
+fi
 
 echo "== Building ARM64 binaries on GitHub Actions =="
 gh workflow run build-arm64.yml --repo "$REPO"
