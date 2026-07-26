@@ -150,6 +150,9 @@ def ask_brain(history, no_thinking=False, use_tools=True):
     answer_started = False
     reasoning_live = None
     live = None
+    reasoning_since_render = 0
+    content_since_render = 0
+    RENDER_EVERY_N_CHARS = 20
 
     try:
         for line in resp.iter_lines():
@@ -171,20 +174,27 @@ def ask_brain(history, no_thinking=False, use_tools=True):
             if reasoning:
                 if not reasoning_started:
                     reasoning_started = True
-                    reasoning_live = Live(console=console, refresh_per_second=12, vertical_overflow="visible")
+                    reasoning_live = Live(console=console, refresh_per_second=8, vertical_overflow="visible")
                     reasoning_live.start()
                 full_reasoning += reasoning
-                reasoning_live.update(Markdown(full_reasoning, style=DIM_STYLE))
+                reasoning_since_render += len(reasoning)
+                if reasoning_since_render >= RENDER_EVERY_N_CHARS:
+                    reasoning_live.update(Markdown(full_reasoning, style=DIM_STYLE))
+                    reasoning_since_render = 0
 
             if text:
                 if not answer_started:
                     if reasoning_live is not None:
+                        reasoning_live.update(Markdown(full_reasoning, style=DIM_STYLE))
                         reasoning_live.stop()
                     answer_started = True
-                    live = Live(console=console, refresh_per_second=12, vertical_overflow="visible")
+                    live = Live(console=console, refresh_per_second=8, vertical_overflow="visible")
                     live.start()
                 full_content += text
-                live.update(Markdown(full_content))
+                content_since_render += len(text)
+                if content_since_render >= RENDER_EVERY_N_CHARS:
+                    live.update(Markdown(full_content))
+                    content_since_render = 0
 
             if delta_tool_calls:
                 for tc in delta_tool_calls:
@@ -201,8 +211,10 @@ def ask_brain(history, no_thinking=False, use_tools=True):
                         acc["function"]["arguments"] += fn["arguments"]
     finally:
         if live is not None:
+            live.update(Markdown(full_content))
             live.stop()
         if reasoning_live is not None and answer_started is False:
+            reasoning_live.update(Markdown(full_reasoning, style=DIM_STYLE))
             reasoning_live.stop()
 
     if not reasoning_started and not answer_started:
