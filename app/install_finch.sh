@@ -12,6 +12,10 @@ mkdir -p "$BIN_DIR"
 
 cp agent.py "$INSTALL_DIR/agent.py"
 cp tools.py "$INSTALL_DIR/tools.py"
+cp requirements.txt "$INSTALL_DIR/requirements.txt"
+
+echo "Installing dependencies..."
+pip install -r "$INSTALL_DIR/requirements.txt" --break-system-packages
 
 cat > "$BIN_DIR/finch" << EOF
 #!/bin/bash

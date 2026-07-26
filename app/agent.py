@@ -4,6 +4,11 @@ import json
 import sys
 import argparse
 from tools import TOOL_DECLARATIONS, validate_args, make_tool_adapters
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.live import Live
+
+console = Console()
 
 HF_TOKEN = os.environ.get("HF_TOKEN")
 SPACE_URL = "https://rtgcortex-movies.hf.space"
@@ -140,54 +145,61 @@ def ask_brain(history, no_thinking=False, use_tools=True):
     tool_calls_by_index = {}
     reasoning_started = False
     answer_started = False
+    live = None
 
-    for line in resp.iter_lines():
-        if not line:
-            continue
-        line = line.decode("utf-8")
-        if not line.startswith("data: "):
-            continue
-        payload_line = line[len("data: "):]
-        if payload_line.strip() == "[DONE]":
-            break
+    try:
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            line = line.decode("utf-8")
+            if not line.startswith("data: "):
+                continue
+            payload_line = line[len("data: "):]
+            if payload_line.strip() == "[DONE]":
+                break
 
-        chunk = json.loads(payload_line)
-        delta = chunk["choices"][0]["delta"]
-        reasoning = delta.get("reasoning_content")
-        text = delta.get("content")
-        delta_tool_calls = delta.get("tool_calls")
+            chunk = json.loads(payload_line)
+            delta = chunk["choices"][0]["delta"]
+            reasoning = delta.get("reasoning_content")
+            text = delta.get("content")
+            delta_tool_calls = delta.get("tool_calls")
 
-        if reasoning:
-            if not reasoning_started:
-                print(f"{GREY}", end="", flush=True)
-                reasoning_started = True
-            print(f"{reasoning}", end="", flush=True)
+            if reasoning:
+                if not reasoning_started:
+                    print(f"{GREY}", end="", flush=True)
+                    reasoning_started = True
+                print(f"{reasoning}", end="", flush=True)
 
-        if text:
-            if not answer_started:
-                if reasoning_started:
-                    print(f"{RESET}")
-                answer_started = True
-            print(text, end="", flush=True)
-            full_content += text
+            if text:
+                if not answer_started:
+                    if reasoning_started:
+                        print(f"{RESET}")
+                    answer_started = True
+                    live = Live(console=console, refresh_per_second=12, vertical_overflow="visible")
+                    live.start()
+                full_content += text
+                live.update(Markdown(full_content))
 
-        if delta_tool_calls:
-            for tc in delta_tool_calls:
-                idx = tc.get("index", 0)
-                if idx not in tool_calls_by_index:
-                    tool_calls_by_index[idx] = {"id": "", "function": {"name": "", "arguments": ""}}
-                acc = tool_calls_by_index[idx]
-                if tc.get("id"):
-                    acc["id"] = tc["id"]
-                fn = tc.get("function", {})
-                if fn.get("name"):
-                    acc["function"]["name"] += fn["name"]
-                if fn.get("arguments"):
-                    acc["function"]["arguments"] += fn["arguments"]
+            if delta_tool_calls:
+                for tc in delta_tool_calls:
+                    idx = tc.get("index", 0)
+                    if idx not in tool_calls_by_index:
+                        tool_calls_by_index[idx] = {"id": "", "function": {"name": "", "arguments": ""}}
+                    acc = tool_calls_by_index[idx]
+                    if tc.get("id"):
+                        acc["id"] = tc["id"]
+                    fn = tc.get("function", {})
+                    if fn.get("name"):
+                        acc["function"]["name"] += fn["name"]
+                    if fn.get("arguments"):
+                        acc["function"]["arguments"] += fn["arguments"]
+    finally:
+        if live is not None:
+            live.stop()
 
     if reasoning_started and not answer_started:
         print(f"{RESET}")  # close out color if we only saw reasoning (tool-call-only turn)
-    else:
+    elif not answer_started:
         print()
 
     tool_calls = list(tool_calls_by_index.values()) if tool_calls_by_index else None
