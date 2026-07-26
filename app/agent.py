@@ -76,7 +76,7 @@ def format_tool_args(args):
 
 def print_tool_tree(name, args, result, is_last=True):
     branch = "└──" if is_last else "├──"
-    print(f"{GREY}{branch} {CYAN_BOLD}⚙ {name}{RESET}{GREY}({format_tool_args(args)}){RESET}")
+    print(f"{GREY}{branch} {CYAN_BOLD} ⚙  {name} {RESET}{GREY} ({format_tool_args(args)}){RESET}")
 
     result_str = json.dumps(result)
     preview = result_str if len(result_str) <= 300 else result_str[:297] + "..."
