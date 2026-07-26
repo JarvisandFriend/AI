@@ -50,5 +50,32 @@
   {
     "role": "assistant",
     "content": "Hey, I wish I could peek into your computer's files! Unfortunately, as an AI, I don't have access to your local file system or the ability to read your current directory for security and privacy reasons. \ud83d\udd12\n\nHowever, if you want me to look at something, you'll need to copy and paste the code, file contents, or any specific text you want me to see right here in our chat.\n\nIf you want to share something from your directory, just copy it over, and I'd be happy to take a look! \ud83d\ude0a"
+  },
+  {
+    "role": "user",
+    "content": "list the files in this directory"
+  },
+  {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"path\":\".\"}",
+          "name": "list_files"
+        },
+        "id": "VDJ2QQg8tCaeBGVgvVbrSl8iIBKKh4P6",
+        "type": "function"
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "VDJ2QQg8tCaeBGVgvVbrSl8iIBKKh4P6",
+    "content": "{\"entries\": [\"Dockerfile\", \"__pycache__\", \"agent.py\", \"history.json\", \"install_finch.sh\", \"requirements.txt\", \"start.sh\", \"tools.py\"]}"
+  },
+  {
+    "role": "assistant",
+    "content": "Got it! I've checked the directory for you. Here are the files and folders I see right now:\n\n*   `Dockerfile`\n*   `__pycache__`\n*   `agent.py` (Yep, our main script!)\n*   `history.json`\n*   `install_finch.sh`\n*   `requirements.txt`\n*   `start.sh`\n*   `tools.py`\n\nLooks like you've got a pretty full project setup there! What should we look at next? \ud83e\udd14"
   }
 ]

@@ -42,6 +42,29 @@ OPENAI_TOOLS = [
 ]
 
 
+CYAN_BOLD = "\033[96m\033[1m"
+
+
+def format_tool_args(args):
+    if not args:
+        return ""
+    parts = [f"{k}={json.dumps(v) if not isinstance(v, str) else v!r}" for k, v in args.items()]
+    joined = ", ".join(parts)
+    return joined if len(joined) <= 80 else joined[:77] + "..."
+
+
+def print_tool_tree(name, args, result, is_last=True):
+    branch = "└──" if is_last else "├──"
+    print(f"{GREY}{branch} {CYAN_BOLD}⚙ {name}{RESET}{GREY}({format_tool_args(args)}){RESET}")
+
+    result_str = json.dumps(result)
+    preview = result_str if len(result_str) <= 300 else result_str[:297] + "..."
+    is_error = isinstance(result, dict) and "error" in result
+    color = YELLOW if is_error else GREY
+    connector = "    " if is_last else "│   "
+    print(f"{connector}{color}└─ {preview}{RESET}\n")
+
+
 def run_tool_call(name, args, tool_adapters):
     validation_error = validate_args(name, args)
     if validation_error:
@@ -75,25 +98,14 @@ def save_history(history):
         json.dump(history, f, indent=2)
 
 
-def ask_brain_with_tools(history, no_thinking=False):
-    """Non-streaming call that requests native tool calling. Returns the raw message dict."""
-    payload = {"messages": history, "tools": OPENAI_TOOLS, "tool_choice": "auto"}
-    if no_thinking:
-        payload["no_thinking"] = True
-
-    resp = requests.post(
-        f"{SPACE_URL}/chat",
-        headers={"Authorization": f"Bearer {HF_TOKEN}"},
-        json=payload,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def ask_brain(history, no_thinking=False):
+def ask_brain(history, no_thinking=False, use_tools=True):
+    """Streams a response. Returns {'content': str, 'tool_calls': list|None}."""
     payload = {"messages": history}
     if no_thinking:
         payload["no_thinking"] = True
+    if use_tools:
+        payload["tools"] = OPENAI_TOOLS
+        payload["tool_choice"] = "auto"
 
     resp = requests.post(
         f"{SPACE_URL}/chat/stream",
@@ -104,6 +116,7 @@ def ask_brain(history, no_thinking=False):
     resp.raise_for_status()
 
     full_content = ""
+    tool_calls_by_index = {}
     reasoning_started = False
     answer_started = False
 
@@ -121,6 +134,7 @@ def ask_brain(history, no_thinking=False):
         delta = chunk["choices"][0]["delta"]
         reasoning = delta.get("reasoning_content")
         text = delta.get("content")
+        delta_tool_calls = delta.get("tool_calls")
 
         if reasoning:
             if not reasoning_started:
@@ -136,8 +150,27 @@ def ask_brain(history, no_thinking=False):
             print(text, end="", flush=True)
             full_content += text
 
-    print()
-    return full_content
+        if delta_tool_calls:
+            for tc in delta_tool_calls:
+                idx = tc.get("index", 0)
+                if idx not in tool_calls_by_index:
+                    tool_calls_by_index[idx] = {"id": "", "function": {"name": "", "arguments": ""}}
+                acc = tool_calls_by_index[idx]
+                if tc.get("id"):
+                    acc["id"] = tc["id"]
+                fn = tc.get("function", {})
+                if fn.get("name"):
+                    acc["function"]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    acc["function"]["arguments"] += fn["arguments"]
+
+    if reasoning_started and not answer_started:
+        print(f"{RESET}")  # close out color if we only saw reasoning (tool-call-only turn)
+    else:
+        print()
+
+    tool_calls = list(tool_calls_by_index.values()) if tool_calls_by_index else None
+    return {"content": full_content, "tool_calls": tool_calls}
 
 
 def print_banner(no_thinking):
@@ -219,23 +252,24 @@ def main():
 
         try:
             for _ in range(MAX_TOOL_TURNS):
-                result = ask_brain_with_tools(history, no_thinking=args.no_thinking)
+                result = ask_brain(history, no_thinking=args.no_thinking, use_tools=True)
                 tool_calls = result.get("tool_calls")
+                content = result.get("content")
 
                 if not tool_calls:
-                    # No tool calls — stream the final answer properly instead
-                    # of re-printing the already-fetched non-streamed content.
-                    answer = ask_brain(history, no_thinking=args.no_thinking)
-                    history.append({"role": "assistant", "content": answer})
+                    history.append({"role": "assistant", "content": content})
                     break
 
                 history.append({
                     "role": "assistant",
-                    "content": result.get("response"),
-                    "tool_calls": tool_calls
+                    "content": content or None,
+                    "tool_calls": [
+                        {"id": tc["id"], "type": "function", "function": tc["function"]}
+                        for tc in tool_calls
+                    ]
                 })
 
-                for call in tool_calls:
+                for i, call in enumerate(tool_calls):
                     fn = call.get("function", {})
                     name = fn.get("name")
                     try:
@@ -243,9 +277,8 @@ def main():
                     except json.JSONDecodeError:
                         call_args = {}
 
-                    print(f"{GREY}[tool call] {name}({json.dumps(call_args)}){RESET}")
                     tool_result = run_tool_call(name, call_args, tool_adapters)
-                    print(f"{GREY}[tool result] {json.dumps(tool_result)[:500]}{RESET}\n")
+                    print_tool_tree(name, call_args, tool_result, is_last=(i == len(tool_calls) - 1))
 
                     history.append({
                         "role": "tool",
