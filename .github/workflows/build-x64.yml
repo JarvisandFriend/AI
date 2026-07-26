@@ -14,8 +14,13 @@ jobs:
         run: |
           cmake -B build -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
           cmake --build build --config Release --target llama-server -j $(nproc)
-      - name: Upload binaries
+      - name: Find all shared libs
+        run: find build -name "*.so*" -o -name "llama-server"
+      - name: Upload everything under build (bin + lib)
         uses: actions/upload-artifact@v4
         with:
           name: llama-server-x64
-          path: build/bin/
+          path: |
+            build/bin/
+            build/lib/
+            build/**/*.so
