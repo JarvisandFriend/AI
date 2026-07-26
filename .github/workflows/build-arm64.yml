@@ -1,0 +1,25 @@
+name: Build llama.cpp ARM64
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          fetch-depth: 1
+
+      - name: Install deps
+        run: sudo apt update && sudo apt install -y cmake build-essential
+
+      - name: Build
+        run: |
+          cmake -B build -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod -DLLAMA_CURL=OFF
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-arm64-binaries
+          path: build/bin/
