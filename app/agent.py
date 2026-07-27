@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+import time
 import argparse
 import requests
 from tools import TOOL_DECLARATIONS, validate_args, make_tool_adapters
@@ -17,6 +18,24 @@ DEFAULT_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-large-latest")
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 FINCH_HOME = os.environ.get("FINCH_HOME", os.path.expanduser("~/.finch"))
 HISTORY_FILE = os.path.join(FINCH_HOME, "history.json")
+
+# Minimum seconds between outgoing Mistral requests. Keeps us under the
+# account's requests-per-second cap instead of firing bursts and hitting
+# 429s. Free tier is 5 req/s (0.2s min spacing); set higher for headroom.
+# Raise this if you still see 429s.
+MIN_REQUEST_INTERVAL = 1.0
+_last_request_time = 0.0
+
+
+def _throttle():
+    """Block until at least MIN_REQUEST_INTERVAL seconds have passed since
+    the last request, so we never send faster than our own cap allows."""
+    global _last_request_time
+    elapsed = time.monotonic() - _last_request_time
+    wait = MIN_REQUEST_INTERVAL - elapsed
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_time = time.monotonic()
 
 # --- Terminal styling ---
 GREY = "\033[90m"
@@ -153,6 +172,8 @@ def ask_brain(model, history, use_tools=True):
     if use_tools:
         payload["tools"] = MISTRAL_TOOLS
         payload["tool_choice"] = "auto"
+
+    _throttle()
 
     try:
         resp = requests.post(
