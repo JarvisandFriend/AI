@@ -58,11 +58,21 @@ SYSTEM_PROMPT = {
         "You have tools available for working with files, running commands, "
         "and searching the web in the user's current working directory. You are "
         "NOT a coding-specific agent — these tools are just available if a task "
-        "happens to need them. Use web_search when a question depends on current "
-        "information (recent events, current prices/versions, anything you might "
-        "be wrong or out of date about) rather than guessing from memory. "
-        "Most conversations won't need any tool at all — just chat normally. "
-        "Only call a tool when the task actually requires it.\n\n"
+        "happens to need them. Most conversations won't need any tool at all — "
+        "just chat normally.\n\n"
+        "MANDATORY WEB SEARCH RULE: your training data has a cutoff date and is "
+        "NOT current. You do not know what has happened after that cutoff, full "
+        "stop — not 'probably not yet', not 'let me guess based on when this is "
+        "usually decided'. If the user asks about anything that depends on "
+        "current information — results of events, scores, winners, prices, "
+        "software versions, who currently holds some position, or anything time-"
+        "sensitive or dated — you MUST call web_search before answering. Do not "
+        "reason about whether the event 'has probably happened yet' from memory. "
+        "Do not joke about the date or claim you're 'stuck' in an earlier year. "
+        "Do not answer, hedge, or guess first and search only if pressed — call "
+        "web_search immediately, on the first turn the topic comes up, then "
+        "answer using what it returns. If web_search errors or returns nothing "
+        "useful, say so plainly instead of making up an answer.\n\n"
         "VERIFICATION RULE — this matters a lot: a tool call succeeding "
         "(exit_code 0, no error) only means the command ran without crashing. "
         "It does NOT prove the outcome you wanted actually happened. Never assume "
@@ -153,10 +163,18 @@ def _clean_messages_for_mistral(history):
     """Mistral wants tool_calls omitted (not null) when absent, and every
     'tool' message needs a matching preceding assistant tool_calls entry —
     both already hold true given how this app builds history, but we strip
-    None fields defensively since the API is strict about null keys."""
+    None fields defensively since the API is strict about null keys.
+
+    Mistral also rejects an assistant message that ends up with neither
+    'content' nor 'tool_calls' after stripping — this can happen if a turn
+    was interrupted (e.g. by an API error) and saved half-formed. Patch
+    those with an empty content string rather than let the API 400 on
+    every subsequent request for the rest of the conversation."""
     cleaned = []
     for msg in history:
         m = {k: v for k, v in msg.items() if v is not None}
+        if m.get("role") == "assistant" and "content" not in m and "tool_calls" not in m:
+            m["content"] = ""
         cleaned.append(m)
     return cleaned
 
@@ -357,7 +375,7 @@ def main():
                 content = result.get("content")
 
                 if not tool_calls:
-                    history.append({"role": "assistant", "content": content})
+                    history.append({"role": "assistant", "content": content or ""})
                     break
 
                 history.append({
