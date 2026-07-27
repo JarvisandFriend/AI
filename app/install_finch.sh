@@ -14,32 +14,21 @@ cp tools.py "$INSTALL_DIR/tools.py"
 cp requirements.txt "$INSTALL_DIR/requirements.txt"
 
 echo "Installing dependencies..."
-# --force-reinstall + --no-cache-dir avoid a known failure mode where a
-# previously broken/partial install (e.g. a mistralai package dir missing
-# __init__.py) gets reported as "already satisfied" and silently left broken.
 pip install -r "$INSTALL_DIR/requirements.txt" --break-system-packages \
     --force-reinstall --no-cache-dir
 
 echo "Verifying installation..."
-# Note: mistralai>=2.0 ships `mistralai` as a namespace umbrella package
-# (no top-level __init__.py by design — this is normal, not broken).
-# The client class and its error types live under mistralai.client.
 if ! python3 -c "
-from mistralai.client import Mistral
-from mistralai.client.errors import SDKError
+import requests
+import rich
 " 2>/tmp/finch_install_check.log; then
     echo ""
-    echo "ERROR: mistralai did not install correctly."
+    echo "ERROR: dependencies did not install correctly."
     cat /tmp/finch_install_check.log
-    echo ""
-    echo "Try running this manually to see the full error, then re-run this installer:"
-    echo "  pip uninstall mistralai -y --break-system-packages"
-    echo "  rm -rf \$(python3 -c 'import site; print(site.getusersitepackages())')/mistralai*"
-    echo "  pip install mistralai --break-system-packages --force-reinstall --no-cache-dir"
     exit 1
 fi
 rm -f /tmp/finch_install_check.log
-echo "mistralai installed and importable."
+echo "Dependencies installed and importable."
 
 # --- API key setup ---
 # Priority: existing env var > existing saved key (skip prompt) > prompt now.

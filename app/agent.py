@@ -2,20 +2,19 @@ import os
 import json
 import sys
 import argparse
+import requests
 from tools import TOOL_DECLARATIONS, validate_args, make_tool_adapters
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.live import Live
 from rich.style import Style
 
-from mistralai.client import Mistral
-from mistralai.client.errors import SDKError
-
 console = Console()
 DIM_STYLE = Style(color="grey50")
 
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
 DEFAULT_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-large-latest")
+MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 HISTORY_FILE = "./history.json"
 
 # --- Terminal styling ---
@@ -130,7 +129,7 @@ def _clean_messages_for_mistral(history):
     """Mistral wants tool_calls omitted (not null) when absent, and every
     'tool' message needs a matching preceding assistant tool_calls entry —
     both already hold true given how this app builds history, but we strip
-    None fields defensively since the SDK is strict about extra/null keys."""
+    None fields defensively since the API is strict about null keys."""
     cleaned = []
     for msg in history:
         m = {k: v for k, v in msg.items() if v is not None}
@@ -138,19 +137,42 @@ def _clean_messages_for_mistral(history):
     return cleaned
 
 
-def ask_brain(client, model, history, use_tools=True):
-    """Streams a response. Returns {'content': str, 'tool_calls': list|None}."""
-    kwargs = {
+def ask_brain(model, history, use_tools=True):
+    """Streams a response from the raw Mistral REST API. Returns
+    {'content': str, 'tool_calls': list|None}."""
+    payload = {
         "model": model,
         "messages": _clean_messages_for_mistral(history),
+        "stream": True,
     }
     if use_tools:
-        kwargs["tools"] = MISTRAL_TOOLS
-        kwargs["tool_choice"] = "auto"
+        payload["tools"] = MISTRAL_TOOLS
+        payload["tool_choice"] = "auto"
 
     try:
-        stream = client.chat.stream(**kwargs)
-    except SDKError as e:
+        resp = requests.post(
+            MISTRAL_API_URL,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {MISTRAL_API_KEY}",
+            },
+            json=payload,
+            stream=True,
+            timeout=120,
+        )
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        body = ""
+        try:
+            body = e.response.text[:500]
+        except Exception:
+            pass
+        print(f"{YELLOW}Mistral API error: {e}{RESET}")
+        if body:
+            print(f"{YELLOW}{body}{RESET}")
+        return {"content": "", "tool_calls": None}
+    except requests.exceptions.RequestException as e:
         print(f"{YELLOW}Mistral API error: {e}{RESET}")
         return {"content": "", "tool_calls": None}
 
@@ -160,24 +182,28 @@ def ask_brain(client, model, history, use_tools=True):
     live = None
 
     try:
-        for event in stream:
-            choice = event.data.choices[0]
-            delta = choice.delta
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            line = line.decode("utf-8")
+            if not line.startswith("data: "):
+                continue
+            payload_line = line[len("data: "):]
+            if payload_line.strip() == "[DONE]":
+                break
 
-            raw_content = getattr(delta, "content", None)
-            delta_tool_calls = getattr(delta, "tool_calls", None) or None
+            try:
+                chunk = json.loads(payload_line)
+            except json.JSONDecodeError:
+                continue
 
-            # content is Union[str, List[ContentChunk]] per the SDK's
-            # DeltaMessage model, and defaults to an UNSET sentinel (not
-            # None) when absent — normalize all cases to a plain string.
-            text = ""
-            if isinstance(raw_content, str):
-                text = raw_content
-            elif isinstance(raw_content, list):
-                for chunk in raw_content:
-                    chunk_text = getattr(chunk, "text", None)
-                    if chunk_text:
-                        text += chunk_text
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+
+            text = delta.get("content")
+            delta_tool_calls = delta.get("tool_calls")
 
             if text:
                 if not answer_started:
@@ -189,32 +215,31 @@ def ask_brain(client, model, history, use_tools=True):
 
             if delta_tool_calls:
                 for tc in delta_tool_calls:
-                    idx = getattr(tc, "index", 0) or 0
+                    idx = tc.get("index", 0) or 0
                     if idx not in tool_calls_by_index:
                         tool_calls_by_index[idx] = {"id": "", "function": {"name": "", "arguments": ""}}
                     acc = tool_calls_by_index[idx]
 
-                    tc_id = getattr(tc, "id", None)
+                    tc_id = tc.get("id")
                     if tc_id:
                         acc["id"] = tc_id
 
-                    fn = getattr(tc, "function", None)
-                    if fn is not None:
-                        fn_name = getattr(fn, "name", None)
-                        fn_args = getattr(fn, "arguments", None)
-                        if fn_name:
-                            acc["function"]["name"] += fn_name
-                        if fn_args:
-                            # Mistral sometimes sends full-object args in one
-                            # chunk rather than fragments; guard against
-                            # double-appending a complete JSON string.
-                            if isinstance(fn_args, str):
-                                acc["function"]["arguments"] += fn_args
-                            else:
-                                acc["function"]["arguments"] += json.dumps(fn_args)
+                    fn = tc.get("function") or {}
+                    fn_name = fn.get("name")
+                    fn_args = fn.get("arguments")
+                    if fn_name:
+                        acc["function"]["name"] += fn_name
+                    if fn_args:
+                        # Guard against a provider sending a full JSON object
+                        # in one chunk rather than string fragments.
+                        if isinstance(fn_args, str):
+                            acc["function"]["arguments"] += fn_args
+                        else:
+                            acc["function"]["arguments"] += json.dumps(fn_args)
     finally:
         if live is not None:
             live.stop()
+        resp.close()
 
     if not answer_started:
         print()
@@ -248,8 +273,6 @@ def main():
 
     if not MISTRAL_API_KEY:
         print(f"{YELLOW}Warning: MISTRAL_API_KEY is not set in environment.{RESET}")
-
-    client = Mistral(api_key=MISTRAL_API_KEY)
 
     print_banner(args.model)
     print(f"{GREY}Working directory: {workdir}{RESET}")
@@ -303,7 +326,7 @@ def main():
 
         try:
             for _ in range(MAX_TOOL_TURNS):
-                result = ask_brain(client, args.model, history, use_tools=True)
+                result = ask_brain(args.model, history, use_tools=True)
                 tool_calls = result.get("tool_calls")
                 content = result.get("content")
 
@@ -337,7 +360,7 @@ def main():
                         "content": json.dumps(tool_result)
                     })
             save_history(history)
-        except SDKError as e:
+        except requests.exceptions.RequestException as e:
             print(f"{YELLOW}Request failed: {e}{RESET}")
             history.pop()
 
