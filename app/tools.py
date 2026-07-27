@@ -24,8 +24,14 @@ Design notes (matters more than it looks like):
 """
 
 import os
+import json
 import subprocess
 import fnmatch
+import requests
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 
 class ToolError(Exception):
@@ -123,6 +129,22 @@ TOOL_DECLARATIONS = [
                 "command": {"type": "string", "description": "Full shell command, e.g. 'ls -la'"}
             },
             "required": ["command"],
+        },
+    },
+    {
+        "name": "web_search",
+        "description": (
+            "Search the web for current information — news, docs, prices, versions, "
+            "anything that could have changed recently or that you're not sure about. "
+            "Returns a grounded answer with source citations. Uses Gemini's Google "
+            "Search grounding under the hood."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for"}
+            },
+            "required": ["query"],
         },
     },
 ]
@@ -261,6 +283,39 @@ def make_tool_adapters(workdir):
         except Exception as e:
             return {"error": str(e)}
 
+    def web_search(query):
+        if not GEMINI_API_KEY:
+            return {"error": "GEMINI_API_KEY is not set. Run 'finch --set search' to add one."}
+        try:
+            resp = requests.post(
+                GEMINI_URL,
+                params={"key": GEMINI_API_KEY},
+                json={
+                    "contents": [{"parts": [{"text": query}]}],
+                    "tools": [{"google_search": {}}],
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            return {"error": f"Gemini search request failed: {e}"}
+
+        data = resp.json()
+        try:
+            candidate = data["candidates"][0]
+            text = "".join(p.get("text", "") for p in candidate["content"]["parts"])
+        except (KeyError, IndexError):
+            return {"error": f"Unexpected Gemini response: {json.dumps(data)[:500]}"}
+
+        sources = []
+        grounding = candidate.get("groundingMetadata", {})
+        for chunk in grounding.get("groundingChunks", []):
+            web = chunk.get("web", {})
+            if web.get("uri"):
+                sources.append({"title": web.get("title", ""), "url": web["uri"]})
+
+        return {"answer": text, "sources": sources}
+
     return {
         "read_file": lambda args: read_file(args["path"]),
         "write_file": lambda args: write_file(args["path"], args["content"]),
@@ -268,4 +323,5 @@ def make_tool_adapters(workdir):
         "list_files": lambda args: list_files(args.get("path", "."), args.get("recursive", False)),
         "search_files": lambda args: search_files(args["query"], args.get("path", ".")),
         "run_command": lambda args: run_command(args["command"]),
+        "web_search": lambda args: web_search(args["query"]),
     }
