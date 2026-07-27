@@ -18,16 +18,17 @@ pip install -r "$INSTALL_DIR/requirements.txt" --break-system-packages \
     --force-reinstall --no-cache-dir
 
 echo "Verifying installation..."
+CHECK_LOG="$INSTALL_DIR/.install_check.log"
 if ! python3 -c "
 import requests
 import rich
-" 2>/tmp/finch_install_check.log; then
+" 2>"$CHECK_LOG"; then
     echo ""
     echo "ERROR: dependencies did not install correctly."
-    cat /tmp/finch_install_check.log
+    cat "$CHECK_LOG"
     exit 1
 fi
-rm -f /tmp/finch_install_check.log
+rm -f "$CHECK_LOG"
 echo "Dependencies installed and importable."
 
 # --- API key setup ---
