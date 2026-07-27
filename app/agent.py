@@ -15,7 +15,8 @@ DIM_STYLE = Style(color="grey50")
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
 DEFAULT_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-large-latest")
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
-HISTORY_FILE = "./history.json"
+FINCH_HOME = os.environ.get("FINCH_HOME", os.path.expanduser("~/.finch"))
+HISTORY_FILE = os.path.join(FINCH_HOME, "history.json")
 
 # --- Terminal styling ---
 GREY = "\033[90m"
@@ -121,6 +122,7 @@ def load_history():
 
 
 def save_history(history):
+    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
 
