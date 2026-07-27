@@ -1,4 +1,3 @@
-import requests
 import os
 import json
 import sys
@@ -9,11 +8,14 @@ from rich.markdown import Markdown
 from rich.live import Live
 from rich.style import Style
 
+from mistralai.client import Mistral
+from mistralai.client.errors import SDKError
+
 console = Console()
 DIM_STYLE = Style(color="grey50")
 
-HF_TOKEN = os.environ.get("HF_TOKEN")
-SPACE_URL = "https://rtgcortex-movies.hf.space"
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
+DEFAULT_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-large-latest")
 HISTORY_FILE = "./history.json"
 
 # --- Terminal styling ---
@@ -23,6 +25,7 @@ BOLD = "\033[1m"
 CYAN = "\033[96m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
+CYAN_BOLD = "\033[96m\033[1m"
 
 
 SYSTEM_PROMPT = {
@@ -64,13 +67,10 @@ SYSTEM_PROMPT = {
 
 MAX_TOOL_TURNS = 15
 
-OPENAI_TOOLS = [
+MISTRAL_TOOLS = [
     {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}}
     for t in TOOL_DECLARATIONS
 ]
-
-
-CYAN_BOLD = "\033[96m\033[1m"
 
 
 def format_tool_args(args):
@@ -126,60 +126,61 @@ def save_history(history):
         json.dump(history, f, indent=2)
 
 
-def ask_brain(history, no_thinking=False, use_tools=True):
-    """Streams a response. Returns {'content': str, 'tool_calls': list|None}."""
-    payload = {"messages": history}
-    if no_thinking:
-        payload["no_thinking"] = True
-    if use_tools:
-        payload["tools"] = OPENAI_TOOLS
-        payload["tool_choice"] = "auto"
+def _clean_messages_for_mistral(history):
+    """Mistral wants tool_calls omitted (not null) when absent, and every
+    'tool' message needs a matching preceding assistant tool_calls entry —
+    both already hold true given how this app builds history, but we strip
+    None fields defensively since the SDK is strict about extra/null keys."""
+    cleaned = []
+    for msg in history:
+        m = {k: v for k, v in msg.items() if v is not None}
+        cleaned.append(m)
+    return cleaned
 
-    resp = requests.post(
-        f"{SPACE_URL}/chat/stream",
-        headers={"Authorization": f"Bearer {HF_TOKEN}"},
-        json=payload,
-        stream=True
-    )
-    resp.raise_for_status()
+
+def ask_brain(client, model, history, use_tools=True):
+    """Streams a response. Returns {'content': str, 'tool_calls': list|None}."""
+    kwargs = {
+        "model": model,
+        "messages": _clean_messages_for_mistral(history),
+    }
+    if use_tools:
+        kwargs["tools"] = MISTRAL_TOOLS
+        kwargs["tool_choice"] = "auto"
+
+    try:
+        stream = client.chat.stream(**kwargs)
+    except SDKError as e:
+        print(f"{YELLOW}Mistral API error: {e}{RESET}")
+        return {"content": "", "tool_calls": None}
 
     full_content = ""
-    full_reasoning = ""
     tool_calls_by_index = {}
-    reasoning_started = False
     answer_started = False
-    reasoning_live = None
     live = None
 
     try:
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            line = line.decode("utf-8")
-            if not line.startswith("data: "):
-                continue
-            payload_line = line[len("data: "):]
-            if payload_line.strip() == "[DONE]":
-                break
+        for event in stream:
+            choice = event.data.choices[0]
+            delta = choice.delta
 
-            chunk = json.loads(payload_line)
-            delta = chunk["choices"][0]["delta"]
-            reasoning = delta.get("reasoning_content")
-            text = delta.get("content")
-            delta_tool_calls = delta.get("tool_calls")
+            raw_content = getattr(delta, "content", None)
+            delta_tool_calls = getattr(delta, "tool_calls", None) or None
 
-            if reasoning:
-                if not reasoning_started:
-                    reasoning_started = True
-                    reasoning_live = Live(console=console, refresh_per_second=12, vertical_overflow="visible")
-                    reasoning_live.start()
-                full_reasoning += reasoning
-                reasoning_live.update(Markdown(full_reasoning, style=DIM_STYLE))
+            # content is Union[str, List[ContentChunk]] per the SDK's
+            # DeltaMessage model, and defaults to an UNSET sentinel (not
+            # None) when absent — normalize all cases to a plain string.
+            text = ""
+            if isinstance(raw_content, str):
+                text = raw_content
+            elif isinstance(raw_content, list):
+                for chunk in raw_content:
+                    chunk_text = getattr(chunk, "text", None)
+                    if chunk_text:
+                        text += chunk_text
 
             if text:
                 if not answer_started:
-                    if reasoning_live is not None:
-                        reasoning_live.stop()
                     answer_started = True
                     live = Live(console=console, refresh_per_second=12, vertical_overflow="visible")
                     live.start()
@@ -188,44 +189,53 @@ def ask_brain(history, no_thinking=False, use_tools=True):
 
             if delta_tool_calls:
                 for tc in delta_tool_calls:
-                    idx = tc.get("index", 0)
+                    idx = getattr(tc, "index", 0) or 0
                     if idx not in tool_calls_by_index:
                         tool_calls_by_index[idx] = {"id": "", "function": {"name": "", "arguments": ""}}
                     acc = tool_calls_by_index[idx]
-                    if tc.get("id"):
-                        acc["id"] = tc["id"]
-                    fn = tc.get("function", {})
-                    if fn.get("name"):
-                        acc["function"]["name"] += fn["name"]
-                    if fn.get("arguments"):
-                        acc["function"]["arguments"] += fn["arguments"]
+
+                    tc_id = getattr(tc, "id", None)
+                    if tc_id:
+                        acc["id"] = tc_id
+
+                    fn = getattr(tc, "function", None)
+                    if fn is not None:
+                        fn_name = getattr(fn, "name", None)
+                        fn_args = getattr(fn, "arguments", None)
+                        if fn_name:
+                            acc["function"]["name"] += fn_name
+                        if fn_args:
+                            # Mistral sometimes sends full-object args in one
+                            # chunk rather than fragments; guard against
+                            # double-appending a complete JSON string.
+                            if isinstance(fn_args, str):
+                                acc["function"]["arguments"] += fn_args
+                            else:
+                                acc["function"]["arguments"] += json.dumps(fn_args)
     finally:
         if live is not None:
             live.stop()
-        if reasoning_live is not None and answer_started is False:
-            reasoning_live.stop()
 
-    if not reasoning_started and not answer_started:
+    if not answer_started:
         print()
 
     tool_calls = list(tool_calls_by_index.values()) if tool_calls_by_index else None
     return {"content": full_content, "tool_calls": tool_calls}
 
 
-def print_banner(no_thinking):
+def print_banner(model):
     print(f"{YELLOW}{BOLD}")
     print("╔══════════════════════════════════════╗")
     print("║                FINCH                  ║")
     print("╚══════════════════════════════════════╝")
     print(f"{RESET}")
-    mode = "no-thinking (fast)" if no_thinking else "thinking (default)"
-    print(f"{GREY}Mode: {mode}{RESET}")
+    print(f"{GREY}Model: {model}{RESET}")
     print(f"{GREY}Commands: /clear (wipe screen + history), /read <path> (load a file), /exit or /reset{RESET}\n")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--no-thinking", action="store_true", help="Skip the model's reasoning phase for faster responses")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="Mistral model to use (default: mistral-large-latest, or $MISTRAL_MODEL)")
     parser.add_argument("--dir", default=".", help="Working directory the agent's tools operate in (default: current directory)")
     args = parser.parse_args()
 
@@ -236,10 +246,12 @@ def main():
 
     tool_adapters = make_tool_adapters(workdir)
 
-    if not HF_TOKEN:
-        print(f"{YELLOW}Warning: HF_TOKEN is not set in environment.{RESET}")
+    if not MISTRAL_API_KEY:
+        print(f"{YELLOW}Warning: MISTRAL_API_KEY is not set in environment.{RESET}")
 
-    print_banner(args.no_thinking)
+    client = Mistral(api_key=MISTRAL_API_KEY)
+
+    print_banner(args.model)
     print(f"{GREY}Working directory: {workdir}{RESET}")
     history = load_history()
     if history:
@@ -271,7 +283,7 @@ def main():
             if os.path.exists(HISTORY_FILE):
                 os.remove(HISTORY_FILE)
             history = [SYSTEM_PROMPT]
-            print_banner(args.no_thinking)
+            print_banner(args.model)
             continue
 
         if user_input.lower().startswith("/read "):
@@ -291,7 +303,7 @@ def main():
 
         try:
             for _ in range(MAX_TOOL_TURNS):
-                result = ask_brain(history, no_thinking=args.no_thinking, use_tools=True)
+                result = ask_brain(client, args.model, history, use_tools=True)
                 tool_calls = result.get("tool_calls")
                 content = result.get("content")
 
@@ -325,7 +337,7 @@ def main():
                         "content": json.dumps(tool_result)
                     })
             save_history(history)
-        except requests.exceptions.RequestException as e:
+        except SDKError as e:
             print(f"{YELLOW}Request failed: {e}{RESET}")
             history.pop()
 
