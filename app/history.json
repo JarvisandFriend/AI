@@ -58,5 +58,21 @@
   {
     "role": "assistant",
     "content": "Hey again! \ud83d\udc4b You're looking for a definitive answer, and I totally get that!\n\nSince the 2026 World Cup hasn't happened yet, I can't tell you who won it because **the tournament hasn't finished!** \ud83d\ude05\n\nThink of it like asking, \"Who won the 2028 Olympics?\"\u2014we know the games are coming, but we don't know the winner until the event is over.\n\nIf you're looking for predictions, I can certainly give you my *best educated guess* based on current team form, or I can search for what the *current* favorites are!\n\nWhat would you like me to do instead? Maybe we can look at who is currently the strongest team leading up to the tournament? \ud83e\udd14"
+  },
+  {
+    "role": "user",
+    "content": "hello"
+  },
+  {
+    "role": "assistant",
+    "content": "Hey! What's up? Ready for another chat? \ud83d\ude0a"
+  },
+  {
+    "role": "user",
+    "content": "what's good"
+  },
+  {
+    "role": "assistant",
+    "content": "Oh, you know, nothing too exciting on my end\u2014just humming along, processing information, and getting ready to help you with whatever you need! \ud83d\ude0a\n\nBut since you asked, what's good is that I'm here and ready to chat about *anything*. Are you working on something cool, watching a good movie, or just relaxing?\n\nWhat's happening in your world right now? \u2728"
   }
 ]

@@ -12,8 +12,7 @@ from rich.style import Style
 console = Console()
 DIM_STYLE = Style(color="grey50")
 
-HF_TOKEN = os.environ.get("HF_TOKEN")
-SPACE_URL = "https://rtgcortex-movies.hf.space"
+SPACE_URL = os.environ.get("FINCH_SERVER_URL", "https://counters-editors-tunnel-survey.trycloudflare.com")
 HISTORY_FILE = "./history.json"
 
 # --- Terminal styling ---
@@ -137,7 +136,6 @@ def ask_brain(history, no_thinking=False, use_tools=True):
 
     resp = requests.post(
         f"{SPACE_URL}/chat/stream",
-        headers={"Authorization": f"Bearer {HF_TOKEN}"},
         json=payload,
         stream=True
     )
@@ -247,9 +245,6 @@ def main():
         sys.exit(1)
 
     tool_adapters = make_tool_adapters(workdir)
-
-    if not HF_TOKEN:
-        print(f"{YELLOW}Warning: HF_TOKEN is not set in environment.{RESET}")
 
     print_banner(args.no_thinking)
     print(f"{GREY}Working directory: {workdir}{RESET}")
