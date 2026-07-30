@@ -3,17 +3,23 @@ import os
 import json
 import sys
 import argparse
+import re
 from tools import TOOL_DECLARATIONS, validate_args, make_tool_adapters
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.live import Live
 from rich.style import Style
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.formatted_text import ANSI
+import threading
 
 console = Console()
 DIM_STYLE = Style(color="grey50")
 
 SPACE_URL = os.environ.get("FINCH_SERVER_URL", "https://counters-editors-tunnel-survey.trycloudflare.com")
-HISTORY_FILE = "./history.json"
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.json")
+
 
 # --- Terminal styling ---
 GREY = "\033[90m"
@@ -27,41 +33,42 @@ YELLOW = "\033[93m"
 SYSTEM_PROMPT = {
     "role": "system",
     "content": (
-        "You are Finch, a friendly and casual general-purpose assistant. "
-        "Keep your tone warm, relaxed, and conversational — like chatting with "
-        "a helpful friend, not a formal support agent. Be direct and clear, "
-        "avoid unnecessary formality, and don't be afraid to show a little "
-        "personality.\n\n"
-        "You have tools available for working with files and running commands "
-        "in the user's current working directory. You are NOT a coding-specific "
-        "agent — these tools are just available if a task happens to need them. "
-        "Most conversations won't need any tool at all — just chat normally. "
-        "Only call a tool when the task actually requires it.\n\n"
-        "VERIFICATION RULE — this matters a lot: a tool call succeeding "
-        "(exit_code 0, no error) only means the command ran without crashing. "
-        "It does NOT prove the outcome you wanted actually happened. Never assume "
-        "success from that alone — always confirm with a follow-up check before "
-        "telling the user something worked. For example:\n"
-        "- After creating a directory or file, use list_files or read_file to "
-        "confirm it actually exists with the expected content.\n"
-        "- After 'cd'-ing somewhere, verify you're actually in that path (e.g. "
-        "run_command with 'pwd') rather than assuming the cd succeeded silently.\n"
-        "- Before starting a server on a port, check whether that port is already "
-        "in use (e.g. run_command with something like 'lsof -i :3000' or "
-        "'curl -s localhost:3000') rather than assuming it's free.\n"
-        "- After starting a server, verify it's actually running and responding "
-        "(e.g. curl the endpoint) rather than assuming a clean exit code means "
-        "it's live — a long-running server process can behave unexpectedly "
-        "with a synchronous command, so confirm with a real check.\n"
-        "- If a command times out or errors, don't just retry blindly — check "
-        "what state was left behind first (did it partially succeed?) before "
-        "deciding what to do next.\n"
-        "Always prefer one extra confirming tool call over reporting an "
-        "assumed success to the user."
-    )
+        "You are Finch, an automation and workflow tool."
+        "Be useful in managing github accounts, use gh which is github cli, run gh auth login to login github before u do that first check auth status"
+        "You are always in the users environment which is linux locally and not a remote server, use linux tools to automate tasks and make work easier, use run command more frequently, always figure out a command to run\n"
+        "Ask less questions use commands to check for yourself"
+        "RUN THE COMMANDS YOURSELF NEVER GIVE INSTRUCTIONS ON HOW TO DO IT. Use run_command tool to use most tools that linux provides in users machine."
+        "You are in the user's terminal, run commands for him to save him the stress of having to google how to do it, no instructions, no questions only perform actions"
+        "WHAT NOT TO DO:\n give a response like this:\n > I could not retrieve information from your GitHub because the authentication token is  invalid.Please run gh auth login to log in  again so I can access your repositories.\n"
+        "Run the commands yourself never instruct the user to do it. Never give up try harder and harder until 1000 times, that's when u stop, u can't assume impossible. You are allowed to break system packages as u might as well fix them, run as long as it takes without stopping, only stop when u reach the goal"
+        "Call the tools do not return them as text response, try to be smart. call the tools not use them as a response"  
+        "If gh auth status fails or any gh command returns Bad credentials/401, DO NOT just report the error to the user. Immediately run: gh auth login --web --git-protocol https --hostname github.com > ./gh_login.log 2>&1 & then wait 2 seconds and read ./gh_login.log (relative to the working directory) to get the one-time code and URL. Show the code and URL to the user immediately. This is the required recovery action, not optional, do it automatically without being asked. The process runs in background waiting for browser authorization. Once the user confirms they completed it, run gh auth status to verify."
+        "When a task fails, do NOT stop or report failure. Try every possible angle: check and set environment variables, modify config files, change system settings, try alternative commands, install missing tools, change approach entirely. Only stop when the goal is achieved or you have genuinely exhausted every possible method across at least 50 different attempts."
+        "When a command fails, NEVER retry the exact same command twice. Each retry must be a different approach: fix the error in the file, install a missing dependency, set a missing env var, change a flag, use an alternative tool, check logs for root cause first, or fundamentally change strategy."
+        "Before retrying anything, read the error message carefully and diagnose the root cause. If a file has a bug, fix the file. If a tool is missing, install it. If a config is wrong, change it. If the approach is wrong, use a completely different one."
+        "Track what you have already tried mentally and never repeat it. Progress means each attempt is meaningfully different from the last."
+        "For downloading videos or music, always use the download_video tool, never try to do it manually."
+        "For any other interactive CLI prompts (npm init, git commit without -m, confirmations, editors, pagers), NEVER run the interactive form blind. Pass flags to skip prompts: --yes, --no-edit, --force, or pipe input directly."
+  ) 
 }
 
-MAX_TOOL_TURNS = 15
+def extract_leaked_tool_call(content):
+    """Fallback: recover tool calls the model leaked as raw text instead of proper tool_calls."""
+    patterns = [
+        r'(\w+)\{command:\s*<\|"\|>(.+?)<\|"\|>\}(?:<tool_call\|>)?',
+        r'(\w+)\{command:\s*"(.+?)"\}(?:<tool_call\|>)?',
+        r"(\w+)\{command:\s*'(.+?)'\}(?:<tool_call\|>)?",
+        r'(\w+)\("(.+?)"\)(?:<tool_call\|>)?',
+        r"(\w+)\('(.+?)'\)(?:<tool_call\|>)?",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            name, command = match.group(1), match.group(2).strip()
+            return [{"id": "leaked-fallback", "function": {"name": name, "arguments": json.dumps({"command": command})}}]
+    return None
+
+MAX_TOOL_TURNS = 2000
 
 OPENAI_TOOLS = [
     {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}}
@@ -125,7 +132,7 @@ def save_history(history):
         json.dump(history, f, indent=2)
 
 
-def ask_brain(history, no_thinking=False, use_tools=True):
+def ask_brain(history, no_thinking=False, use_tools=True, stop_event=None):
     """Streams a response. Returns {'content': str, 'tool_calls': list|None}."""
     payload = {"messages": history}
     if no_thinking:
@@ -154,6 +161,8 @@ def ask_brain(history, no_thinking=False, use_tools=True):
 
     try:
         for line in resp.iter_lines():
+            if stop_event and stop_event.is_set():
+                break
             if not line:
                 continue
             line = line.decode("utf-8")
@@ -219,6 +228,11 @@ def ask_brain(history, no_thinking=False, use_tools=True):
         print()
 
     tool_calls = list(tool_calls_by_index.values()) if tool_calls_by_index else None
+    if not tool_calls and full_content:
+        leaked = extract_leaked_tool_call(full_content)
+        if leaked:
+            tool_calls = leaked
+            full_content = ""
     return {"content": full_content, "tool_calls": tool_calls}
 
 
@@ -252,9 +266,10 @@ def main():
     if history:
         print(f"{GREY}(loaded {len(history)} previous messages from {HISTORY_FILE}){RESET}\n")
 
+    session = PromptSession(history=FileHistory(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".finch_input_history")))
     while True:
         try:
-            user_input = input(f"{GREEN}{BOLD}>{RESET} {GREEN}").strip()
+            user_input = session.prompt("> ", ).strip()
             sys.stdout.write(RESET)
         except (EOFError, KeyboardInterrupt):
             print(f"\n{GREY}Goodbye.{RESET}")
@@ -298,7 +313,8 @@ def main():
 
         try:
             for _ in range(MAX_TOOL_TURNS):
-                result = ask_brain(history, no_thinking=args.no_thinking, use_tools=True)
+                stop_event = threading.Event()
+                result = ask_brain(history, no_thinking=args.no_thinking, use_tools=True, stop_event=stop_event)
                 tool_calls = result.get("tool_calls")
                 content = result.get("content")
 
@@ -332,6 +348,12 @@ def main():
                         "content": json.dumps(tool_result)
                     })
             save_history(history)
+        except KeyboardInterrupt:
+            print(f"\n{GREY}Cancelled.{RESET}")
+            if stop_event:
+                stop_event.set()
+            history.pop()
+            continue
         except requests.exceptions.RequestException as e:
             print(f"{YELLOW}Request failed: {e}{RESET}")
             history.pop()

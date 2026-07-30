@@ -132,6 +132,17 @@ TOOL_DECLARATIONS = [
         },
     },
     {
+        "name": "download_video",
+        "description": "Download a video by name. Searches for it using yt-search, downloads with yt-dlp, and serves it via HTTP so the user can watch it in their browser.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Video name/title to search for"}
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "web_search",
         "description": (
             "Search the web for current information — news, docs, prices, versions, "
@@ -316,6 +327,63 @@ def make_tool_adapters(workdir):
 
         return {"answer": text, "sources": sources}
 
+    def download_video(query):
+        import shutil
+        videos_dir = os.path.expanduser("~/videos")
+        os.makedirs(videos_dir, exist_ok=True)
+
+        # Step 1: install yt-search if needed
+        node = shutil.which("node")
+        if not node:
+            return {"error": "node is not installed. Run: pkg install nodejs"}
+
+        search_js = os.path.join(workdir, "_yt_search.js")
+        with open(search_js, "w") as f:
+            f.write("""
+const yts = require('yt-search');
+(async () => {
+  const r = await yts(process.argv[2]);
+  if (!r.videos.length) { console.error('No results'); process.exit(1); }
+  console.log(r.videos[0].url);
+})();
+""")
+
+        # Install yt-search
+        install = subprocess.run("npm install yt-search", shell=True, cwd=workdir, capture_output=True, text=True)
+        if install.returncode != 0:
+            return {"error": f"npm install yt-search failed: {install.stderr}"}
+
+        # Step 2: search for video URL
+        search = subprocess.run(f"node _yt_search.js {query!r}", shell=True, cwd=workdir, capture_output=True, text=True, timeout=30)
+        url = search.stdout.strip()
+        if not url or "youtube.com" not in url:
+            return {"error": f"Could not find video URL for: {query}. stderr: {search.stderr}"}
+
+        # Step 3: install yt-dlp and download
+        subprocess.run("pip install yt-dlp --break-system-packages -q", shell=True)
+        # ensure ffmpeg installed
+        subprocess.run('pkg install ffmpeg -y', shell=True, capture_output=True)
+
+        dl = subprocess.run(
+            f"yt-dlp {url!r} -f 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/best' --merge-output-format mp4 -o '{videos_dir}/%(title)s.%(ext)s'",
+            shell=True, capture_output=True, text=True, timeout=300
+        )
+        if dl.returncode != 0:
+            return {"error": f"yt-dlp failed: {dl.stderr[-1000:]}"}
+
+        # Step 4: serve
+        subprocess.Popen(
+            "python3 -m http.server 8080",
+            shell=True, cwd=videos_dir,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+
+        return {
+            "status": "done",
+            "url": url,
+            "message": "Video downloaded. Open http://localhost:8080 in your browser to watch."
+        }
+
     return {
         "read_file": lambda args: read_file(args["path"]),
         "write_file": lambda args: write_file(args["path"], args["content"]),
@@ -324,4 +392,5 @@ def make_tool_adapters(workdir):
         "search_files": lambda args: search_files(args["query"], args.get("path", ".")),
         "run_command": lambda args: run_command(args["command"]),
         "web_search": lambda args: web_search(args["query"]),
+        "download_video": lambda args: download_video(args["query"]),
     }
